@@ -16,7 +16,8 @@ var catalog = require('../catalog/catalog.js');
 var catalogRemote = require('../catalog/catalog-remote.js');
 var stats = require('../stats.js');
 var isopack = require('../isobuild/isopack.js');
-var cordova = require('./commands-cordova.js');
+var updater = require('../updater.js');
+import { filterCordovaPackages } from '../cordova/plugins.js';
 var Console = require('../console.js').Console;
 var projectContextModule = require('../project-context.js');
 var colonConverter = require('../utils/colon-converter.js');
@@ -1823,7 +1824,7 @@ main.registerCommand({
 
   var exitCode = 0;
 
-  var filteredPackages = cordova.filterPackages(options.args);
+  var filteredPackages = filterCordovaPackages(options.args);
   var pluginsToAdd = filteredPackages.plugins;
 
   if (pluginsToAdd.length) {
@@ -2006,7 +2007,7 @@ main.registerCommand({
   });
 
   // Special case on reserved package namespaces, such as 'cordova'
-  var filteredPackages = cordova.filterPackages(options.args);
+  var filteredPackages = filterCordovaPackages(options.args);
   var pluginsToRemove = filteredPackages.plugins;
 
   var exitCode = 0;
