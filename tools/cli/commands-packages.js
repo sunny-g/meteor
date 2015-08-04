@@ -16,7 +16,7 @@ var catalog = require('../catalog/catalog.js');
 var catalogRemote = require('../catalog/catalog-remote.js');
 var stats = require('../stats.js');
 var isopack = require('../isobuild/isopack.js');
-var updater = require('../updater.js');
+var updater = require('../packaging/updater.js');
 import { filterCordovaPackages } from '../cordova/plugins.js';
 var Console = require('../console.js').Console;
 var projectContextModule = require('../project-context.js');
