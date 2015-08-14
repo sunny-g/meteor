@@ -1,6 +1,14 @@
 // By default, allow the autologin process to happen
 autoLoginEnabled = true;
 
+/********** MYLAR START **********/
+match = window.location.hash.match(/^\#\/Mylar(.*)\/(.*)$/);
+if (match) {
+  console.log("Mylar url intercept!");
+  autoLoginEnabled = false; // let Mylar intercept from here
+}
+/********** MYLAR END **********/
+
 // All of the special hash URLs we support for accounts interactions
 var accountsPaths = ["reset-password", "verify-email", "enroll-account"];
 

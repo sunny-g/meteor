@@ -46,6 +46,9 @@ Package.onUse(function (api) {
 
   // Transport
   api.use('reload', 'client', {weak: true});
+  /********** MYLAR START **********/
+  api.use('cprogress', 'client');
+  /********** MYLAR END **********/
   api.addFiles('common.js');
   api.addFiles(['sockjs-0.3.4.js', 'stream_client_sockjs.js'], 'client');
   api.addFiles('stream_client_nodejs.js', 'server');

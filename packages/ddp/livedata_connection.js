@@ -700,7 +700,10 @@ _.extend(Connection.prototype, {
    * @param {Function} options.onResultReceived (Client only) This callback is invoked with the error or result of the method (just like `asyncCallback`) as soon as the error or result is available. The local cache may not yet reflect the writes performed by the method.
    * @param {Function} [asyncCallback] Optional callback; same semantics as in [`Meteor.call`](#meteor_call).
    */
-  apply: function (name, args, options, callback) {
+  
+  /********** MYLAR START **********/
+  apply: function (name, args, options, callback, mylar_meta) {
+  /********** MYLAR END **********/
     var self = this;
 
     // We were passed 3 arguments. They may be either (name, args, options)
@@ -788,6 +791,13 @@ _.extend(Connection.prototype, {
         // Note that unlike in the corresponding server code, we never audit
         // that stubs check() their arguments.
         var stubReturnValue = DDP._CurrentInvocation.withValue(invocation, function () {
+          /********** MYLAR START **********/
+          var args_clone = EJSON.clone(args);
+          // remove the _id from the update operation for the client-stub here
+          if (mylar_meta.opt === "update") {
+            delete args_clone[1]['$set']['_id'];
+          }
+          /********** MYLAR END **********/
           if (Meteor.isServer) {
             // Because saveOriginals and retrieveOriginals aren't reentrant,
             // don't allow stubs to yield.
@@ -869,38 +879,92 @@ _.extend(Connection.prototype, {
       message.randomSeed = randomSeed;
     }
 
-    var methodInvoker = new MethodInvoker({
-      methodId: methodId(),
-      callback: callback,
-      connection: self,
-      onResultReceived: options.onResultReceived,
-      wait: !!options.wait,
-      message: message
-    });
+    /********** MYLAR START **********/
+    if (mylar_meta && Meteor.isClient) {
 
-    if (options.wait) {
-      // It's a wait method! Wait methods go in their own block.
-      self._outstandingMethodBlocks.push(
-        {wait: true, methods: [methodInvoker]});
-    } else {
-      // Not a wait method. Start a new block if the previous block was a wait
-      // block, and add it to the last block of methods.
-      if (_.isEmpty(self._outstandingMethodBlocks) ||
-          _.last(self._outstandingMethodBlocks).wait)
-        self._outstandingMethodBlocks.push({wait: false, methods: []});
-      _.last(self._outstandingMethodBlocks).methods.push(methodInvoker);
+      if (CProgress && document && document.body) CProgress.start();// start showing progress
+
+      mylar_meta.transform(mylar_meta.coll, mylar_meta.doc, function (container) {
+
+        // MYLAR: this is important because of a patch introduced in 0.9 which prevents
+        // the mutation of message.params.args, see line 673-675
+
+        if (container) {
+          // remove _id if were updating because: MongoError - Mod on _id not allowed
+          if (mylar_meta.opt === "update") delete container._id
+
+          // update or upsert command,
+          if (message.params.length > 1 && message.params[1]['$set']) {
+            message.params[1]['$set'] = container;
+          }
+          // insert command
+          else message.params = [container];
+        }
+
+        var methodInvoker = new MethodInvoker({
+          methodId: methodId(),
+          callback: callback,
+          connection: self,
+          onResultReceived: options.onResultReceived,
+          wait: !!options.wait,
+          message: message
+        });
+
+        if (options.wait) {
+          // It's a wait method! Wait methods go in their own block.
+          self._outstandingMethodBlocks.push({wait: true, methods: [methodInvoker]});
+        } else {
+          // Not a wait method. Start a new block if the previous block was a wait
+          // block, and add it to the last block of methods.
+          if (_.isEmpty(self._outstandingMethodBlocks) ||
+            _.last(self._outstandingMethodBlocks).wait)
+            self._outstandingMethodBlocks.push({wait: false, methods: []});
+          _.last(self._outstandingMethodBlocks).methods.push(methodInvoker);
+        }
+
+        // If we added it to the first block, send it out now.
+        if (self._outstandingMethodBlocks.length === 1)
+          methodInvoker.sendMessage();
+      });
+      if (CProgress && document && document.body) CProgress.done(); // stop showing progress
+
+      return options.returnStubValue ? stubReturnValue : undefined;
+
+    } else { /********** ORIGINAL CODE BLOCK, NON-MYLAR **********/
+      var methodInvoker = new MethodInvoker({
+        methodId: methodId(),
+        callback: callback,
+        connection: self,
+        onResultReceived: options.onResultReceived,
+        wait: !!options.wait,
+        message: message
+      });
+
+      if (options.wait) {
+        // It's a wait method! Wait methods go in their own block.
+        self._outstandingMethodBlocks.push(
+          {wait: true, methods: [methodInvoker]});
+      } else {
+        // Not a wait method. Start a new block if the previous block was a wait
+        // block, and add it to the last block of methods.
+        if (_.isEmpty(self._outstandingMethodBlocks) ||
+            _.last(self._outstandingMethodBlocks).wait)
+          self._outstandingMethodBlocks.push({wait: false, methods: []});
+        _.last(self._outstandingMethodBlocks).methods.push(methodInvoker);
+      }
+
+      // If we added it to the first block, send it out now.
+      if (self._outstandingMethodBlocks.length === 1)
+        methodInvoker.sendMessage();
+
+      // If we're using the default callback on the server,
+      // block waiting for the result.
+      if (future) {
+        return future.wait();
+      }
+      return options.returnStubValue ? stubReturnValue : undefined;
     }
-
-    // If we added it to the first block, send it out now.
-    if (self._outstandingMethodBlocks.length === 1)
-      methodInvoker.sendMessage();
-
-    // If we're using the default callback on the server,
-    // block waiting for the result.
-    if (future) {
-      return future.wait();
-    }
-    return options.returnStubValue ? stubReturnValue : undefined;
+    /********** MYLAR END **********/
   },
 
   // Before calling a method stub, prepare all stores to track changes and allow
@@ -1374,9 +1438,19 @@ _.extend(Connection.prototype, {
         // Did we already receive a ready message? (Oops!)
         if (subRecord.ready)
           return;
-        subRecord.readyCallback && subRecord.readyCallback();
-        subRecord.ready = true;
-        subRecord.readyDeps.changed();
+        /********** MYLAR START **********/
+        var ready_func = function () {
+          subRecord.readyCallback && subRecord.readyCallback();
+          subRecord.ready = true;
+          subRecord.readyDeps.changed();
+        };
+
+        if (Meteor.Collection && Meteor.Collection.intercept && Meteor.Collection.intercept.on_ready) {
+          Meteor.Collection.intercept.on_ready(subRecord.name, ready_func);
+        } else {
+          ready_func();
+        }
+        /********** MYLAR END **********/
       });
     });
   },

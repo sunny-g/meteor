@@ -121,6 +121,9 @@ Accounts.createUser = function (options, callback) {
   Accounts.callLoginMethod({
     methodName: 'createUser',
     methodArguments: [options],
+    /********** MYLAR START **********/
+    suppressLogin: options.suppressLogin,
+    /********** MYLAR END **********/
     userCallback: callback
   });
 };

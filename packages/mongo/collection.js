@@ -23,6 +23,28 @@ Mongo = {};
 The default id generation technique is `'STRING'`.
  * @param {Function} options.transform An optional transformation function. Documents will be passed through this function before being returned from `fetch` or `findOne`, and before being passed to callbacks of `observe`, `map`, `forEach`, `allow`, and `deny`. Transforms are *not* applied for the callbacks of `observeChanges` or to cursors returned from publish functions.
  */
+
+/********** MYLAR START **********/
+// encrypt outgoing traffic
+function intercept_out(collection, container, callback) {
+  if (Meteor.isClient &&
+    Mongo.Collection && Mongo.Collection.intercept && Mongo.Collection.intercept.out) {
+    Mongo.Collection.intercept.out(collection, container, callback);
+  } else {
+    callback && callback();
+  }
+}
+
+// decrypt incoming data
+function intercept_in(collection, id, container, callback) {
+  if (Meteor.isClient && Mongo.Collection && Mongo.Collection.intercept && Mongo.Collection.intercept.incoming) {
+    Mongo.Collection.intercept.incoming(collection, id, container, callback);
+  } else {
+    callback && callback();
+  }
+}
+/********** MYLAR END **********/
+
 Mongo.Collection = function (name, options) {
   var self = this;
   if (! (self instanceof Mongo.Collection))
@@ -105,6 +127,12 @@ Mongo.Collection = function (name, options) {
   self._name = name;
   self._driver = options._driver;
 
+  /********** MYLAR START **********/
+  if (Mongo.Collection.intercept && Mongo.Collection.intercept.init) {
+    Mongo.Collection.intercept.init(self);
+  }
+  /********** MYLAR END **********/
+
   if (self._connection && self._connection.registerStore) {
     // OK, we're going to be a slave, replicating some remote
     // database, except possibly with some temporary divergence while
@@ -147,18 +175,21 @@ Mongo.Collection = function (name, options) {
           if (!replace) {
             if (doc)
               self._collection.remove(mongoId);
-          } else if (!doc) {
-            self._collection.insert(replace);
           } else {
-            // XXX check that replace has no $ ops
-            self._collection.update(mongoId, replace);
+          /********** MYLAR START **********/
+            intercept_in(self, mongoId, replace, function () {
+              if (!doc) self._collection.insert(replace);
+              else self._collection.update(mongoId, replace);
+            });
           }
           return;
         } else if (msg.msg === 'added') {
-          if (doc) {
-            throw new Error("Expected not to find a document already present for an add");
-          }
-          self._collection.insert(_.extend({_id: mongoId}, msg.fields));
+          intercept_in(self, mongoId, msg.fields, function () {
+            if (doc) {
+              throw new Error("Expected not to find a document already present for an add");
+            }
+            self._collection.insert(_.extend({_id: mongoId}, msg.fields));
+          });
         } else if (msg.msg === 'removed') {
           if (!doc)
             throw new Error("Expected to find a document already present for removed");
@@ -167,19 +198,18 @@ Mongo.Collection = function (name, options) {
           if (!doc)
             throw new Error("Expected to find a document to change");
           if (!_.isEmpty(msg.fields)) {
-            var modifier = {};
+            var newdoc = _.extend(doc, {}); //clone the object
             _.each(msg.fields, function (value, key) {
               if (value === undefined) {
-                if (!modifier.$unset)
-                  modifier.$unset = {};
-                modifier.$unset[key] = 1;
+                delete newdoc[key];
               } else {
-                if (!modifier.$set)
-                  modifier.$set = {};
-                modifier.$set[key] = value;
+                newdoc[key] = value;
               }
             });
-            self._collection.update(mongoId, modifier);
+            intercept_in(self, mongoId, newdoc, function () {
+              self._collection.update(mongoId, newdoc);
+            });
+          /********** MYLAR END **********/
           }
         } else {
           throw new Error("I don't know how to deal with this message");
@@ -463,6 +493,10 @@ _.each(["insert", "update", "remove"], function (name) {
       callback = args.pop();
     }
 
+    /********** MYLAR START **********/
+    var Mylar_meta = {'coll': self, 'transform': intercept_out};
+    /********** MYLAR END **********/
+
     if (name === "insert") {
       if (!args.length)
         throw new Error("insert requires an argument");
@@ -474,20 +508,12 @@ _.each(["insert", "update", "remove"], function (name) {
               || insertId instanceof Mongo.ObjectID))
           throw new Error("Meteor requires document _id fields to be non-empty strings or ObjectIDs");
       } else {
-        var generateId = true;
-        // Don't generate the id if we're the client and the 'outermost' call
-        // This optimization saves us passing both the randomSeed and the id
-        // Passing both is redundant.
-        if (self._connection && self._connection !== Meteor.server) {
-          var enclosing = DDP._CurrentInvocation.get();
-          if (!enclosing) {
-            generateId = false;
-          }
-        }
-        if (generateId) {
-          insertId = args[0]._id = self._makeNewID();
-        }
+        /********** MYLAR START **********/
+        insertId = args[0]._id = self._makeNewID();
       }
+      Mylar_meta['opt'] = "insert";
+      Mylar_meta['doc'] = args[0];
+      /********** MYLAR END **********/
     } else {
       args[0] = Mongo.Collection._rewriteSelector(args[0]);
 
@@ -507,6 +533,13 @@ _.each(["insert", "update", "remove"], function (name) {
             options.insertedId = self._makeNewID();
           }
         }
+        /********** MYLAR START **********/
+        Mylar_meta['opt'] = "update";
+        Mylar_meta['doc'] = args[1]['$set'];
+        // if "_id" is in immutable declaration, we can finally
+        // update a doc now by passing it in here and removing it later in ddp/livedata_connection.js
+        if (Mylar_meta['doc'] && self._connection !== Meteor.server) Mylar_meta['doc']['_id'] = args[0]._id;
+        /********** MYLAR END **********/
       }
     }
 
@@ -560,9 +593,11 @@ _.each(["insert", "update", "remove"], function (name) {
         throwIfSelectorIsNotId(args[0], name);
       }
 
+      /********** MYLAR START **********/
       ret = chooseReturnValueFromCollectionResult(
-        self._connection.apply(self._prefix + name, args, {returnStubValue: true}, wrappedCallback)
+        self._connection.apply(self._prefix + name, args, {returnStubValue: true}, wrappedCallback, Mylar_meta)
       );
+      /********** MYLAR START **********/
 
     } else {
       // it's my collection.  descend into the collection object
